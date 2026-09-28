@@ -1,0 +1,62 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&family=Playfair+Display:ital,wght@0,600;0,700;1,600&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --bg-paper: #F9F9F7;
+  --text-ink: #111111;
+  --border-line: #E5E5E0;
+  --dot-color: rgba(17, 17, 17, 0.1);
+  --accent: #CC0000;
+  --font-inter: 'Inter', sans-serif;
+  --font-jetbrains: 'JetBrains Mono', monospace;
+  --font-playfair: 'Playfair Display', serif;
+}
+
+.dark {
+  --bg-paper: #191919;
+  --text-ink: #EBEBEB;
+  --border-line: #333333;
+  --dot-color: rgba(235, 235, 235, 0.08);
+  --accent: #CC0000;
+}
+
+
+body {
+  background-color: var(--bg-paper);
+  color: var(--text-ink);
+  background-image: radial-gradient(var(--dot-color) 1px, transparent 1px);
+  background-size: 16px 16px;
+  font-family: var(--font-inter);
+  margin: 0;
+  padding: 0;
+  min-height: 100vh;
+}
+
+/* Hard paper cutout hover shadow per UI_UX.md Section 2 */
+.cutout-hover {
+  transition: transform 0.2s ease-out, box-shadow 0.2s ease-out;
+}
+
+.cutout-hover:hover {
+  transform: translate(-2px, -2px);
+  box-shadow: 4px 4px 0px 0px var(--text-ink);
+}
+
+/* Bottom border input styling */
+.bujo-input {
+  background: transparent;
+  border-bottom: 2px solid var(--text-ink);
+  font-family: var(--font-jetbrains);
+}
+
+.bujo-input:focus {
+  outline: none;
+  background-color: rgba(0, 0, 0, 0.02);
+}
+
+.dark .bujo-input:focus {
+  background-color: rgba(255, 255, 255, 0.02);
+}

@@ -1,0 +1,563 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Autonomous Cognitive Offloader</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&family=Playfair+Display:ital,wght@0,600;0,700;1,600&display=swap" rel="stylesheet">
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <style>
+    :root {
+      --bg-paper: #F9F9F7;
+      --text-ink: #111111;
+      --border-line: #E5E5E0;
+      --dot-color: rgba(17, 17, 17, 0.1);
+      --accent: #CC0000;
+    }
+    .dark {
+      --bg-paper: #191919;
+      --text-ink: #EBEBEB;
+      --border-line: #333333;
+      --dot-color: rgba(235, 235, 235, 0.08);
+      --accent: #CC0000;
+    }
+    * {
+      border-radius: 0px !important;
+    }
+    body {
+      background-color: var(--bg-paper);
+      color: var(--text-ink);
+      background-image: radial-gradient(var(--dot-color) 1px, transparent 1px);
+      background-size: 16px 16px;
+      font-family: 'Inter', sans-serif;
+      min-height: 100vh;
+      margin: 0;
+    }
+    .font-mono { font-family: 'JetBrains Mono', monospace; }
+    .font-serif { font-family: 'Playfair Display', serif; }
+    .cutout-hover {
+      transition: transform 0.2s ease-out, box-shadow 0.2s ease-out;
+    }
+    .cutout-hover:hover {
+      transform: translate(-2px, -2px);
+      box-shadow: 4px 4px 0px 0px var(--text-ink);
+    }
+    .bujo-input {
+      background: transparent;
+      border-bottom: 2px solid var(--text-ink);
+      font-family: 'JetBrains Mono', monospace;
+    }
+    .bujo-input:focus {
+      outline: none;
+      background-color: rgba(0, 0, 0, 0.02);
+    }
+    .dark .bujo-input:focus {
+      background-color: rgba(255, 255, 255, 0.02);
+    }
+  </style>
+</head>
+<body class="transition-colors duration-200">
+  <div id="app" class="max-w-5xl mx-auto px-4 py-6 min-h-screen flex flex-col justify-between">
+    <!-- Header -->
+    <header class="flex justify-between items-center pb-4 border-b border-[var(--border-line)] mb-6">
+      <div class="flex items-center gap-3">
+        <span class="font-mono text-xs uppercase tracking-widest font-bold">OFFLOADER</span>
+        <span class="text-gray-400">/</span>
+        <span class="font-mono text-[11px] text-gray-500 uppercase tracking-widest">NEURO-SYMBOLIC CORE</span>
+      </div>
+
+      <div class="flex items-center gap-3">
+        <div class="hidden md:flex items-center gap-2">
+          <span class="font-mono text-[10px] text-gray-400 uppercase tracking-wider">DEMO:</span>
+          <button onclick="runScenario(1)" class="px-2 py-1 border border-[var(--border-line)] font-mono text-[10px] uppercase hover:border-[var(--text-ink)]">1. Vague Goal</button>
+          <button onclick="runScenario(2)" class="px-2 py-1 border border-[var(--border-line)] font-mono text-[10px] uppercase hover:border-[var(--text-ink)]">2. Exam Preemption</button>
+          <button onclick="runScenario(3)" class="px-2 py-1 border border-[var(--border-line)] font-mono text-[10px] uppercase hover:border-[var(--text-ink)]">3. BuJo Log</button>
+        </div>
+
+        <button onclick="openPdfModal()" title="Upload Syllabus PDF" class="p-2 border border-[var(--border-line)] hover:border-[var(--text-ink)]">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"/></svg>
+        </button>
+
+        <button onclick="toggleTheme()" title="Toggle Dark/Light Mode" class="p-2 border border-[var(--border-line)] hover:border-[var(--text-ink)]">
+          <svg id="themeIcon" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z"/></svg>
+        </button>
+
+        <button onclick="toggleView()" id="viewToggleBtn" class="px-3 py-2 bg-[var(--text-ink)] text-[var(--bg-paper)] font-mono text-xs uppercase tracking-widest hover:opacity-90">
+          THE LEDGER [->]
+        </button>
+      </div>
+    </header>
+
+    <!-- Main Chat Surface (Screen 1 per UI_UX.md) -->
+    <div id="chatSurface" class="flex-1 flex flex-col justify-between">
+      <div id="messageThread" class="space-y-6 pb-28 overflow-y-auto">
+        <div class="flex flex-col items-start">
+          <div class="flex items-center gap-2 mb-1">
+            <span class="font-mono text-[10px] uppercase tracking-widest text-gray-500">AGENT</span>
+            <span class="font-mono text-[10px] text-gray-400">08:00</span>
+          </div>
+          <div class="max-w-2xl p-4 text-sm leading-relaxed bg-[var(--bg-paper)] border border-[var(--border-line)] shadow-[3px_3px_0px_0px_rgba(0,0,0,0.05)]">
+            Autonomous Cognitive Offloader active. State your goal, log a workout, or announce a deadline. Vague intentions will be interrogated.
+          </div>
+        </div>
+      </div>
+
+      <!-- Pinned Bottom Bar -->
+      <div class="fixed bottom-0 left-0 right-0 bg-[var(--bg-paper)]/95 backdrop-blur-sm border-t border-[var(--border-line)] py-4">
+        <div class="max-w-5xl mx-auto px-4">
+          <form onsubmit="handleFormSubmit(event)" class="flex items-center gap-3">
+            <button type="button" onclick="toggleGrillMode()" id="grillBtn" class="border border-black bg-transparent text-black dark:border-white dark:text-white font-mono text-xs uppercase px-3 py-2 transition-colors select-none">[ GRILL: OFF ]</button>
+            <div class="flex-1 flex items-center border-b-2 border-[var(--text-ink)] pb-1">
+              <input id="chatInput" type="text" placeholder="Log workout, announce exam, or set a goal..." class="w-full bg-transparent font-mono text-sm focus:outline-none placeholder:text-gray-400" />
+              <button type="button" onclick="toggleVoiceInput()" id="micBtn" class="p-2 text-gray-400 hover:text-[var(--text-ink)]">
+                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z"/></svg>
+              </button>
+            </div>
+            <button type="submit" class="px-5 py-2.5 bg-[var(--text-ink)] text-[var(--bg-paper)] font-mono text-xs uppercase tracking-widest hover:opacity-90">SEND</button>
+          </form>
+        </div>
+      </div>
+    </div>
+
+    <!-- The Ledger Surface (Screen 2 per UI_UX.md) -->
+    <div id="ledgerSurface" class="hidden flex-1 space-y-8">
+      <div>
+        <h1 class="font-serif text-5xl md:text-6xl font-bold tracking-tight mb-2">The Ledger.</h1>
+        <div class="border-b-4 border-[var(--text-ink)] mb-2"></div>
+        <p class="font-mono text-xs text-gray-500 uppercase tracking-widest">Vol. 1 | Life Telemetry & Schedule Adherence — Google OR-Tools CP-SAT Solved</p>
+      </div>
+
+      <div class="grid grid-cols-1 lg:grid-cols-12 border border-[var(--border-line)] bg-[var(--bg-paper)]">
+        <!-- 8 cols Left -->
+        <div class="lg:col-span-8 p-6 lg:border-r border-[var(--border-line)] space-y-8">
+          <div class="grid grid-cols-2 sm:grid-cols-4 gap-4">
+            <div class="border border-[var(--border-line)] bg-[var(--bg-paper)] p-5 cutout-hover">
+              <p class="font-mono text-xs uppercase tracking-widest opacity-70 mb-2">STREAK</p>
+              <p id="statStreak" class="font-mono text-3xl font-bold mb-1">0 DAYS</p>
+              <p class="font-mono text-[11px] opacity-60 uppercase">WORKOUT HABIT</p>
+            </div>
+            <div class="border border-[var(--text-ink)] bg-[var(--text-ink)] text-[var(--bg-paper)] p-5 cutout-hover">
+              <p class="font-mono text-xs uppercase tracking-widest opacity-80 mb-2">SCHEDULE</p>
+              <p id="statSchedule" class="font-mono text-3xl font-bold mb-1">ON_TRACK</p>
+              <p id="statScheduleSub" class="font-mono text-[11px] opacity-70 uppercase">0 CONFLICTS</p>
+            </div>
+            <div class="border border-[var(--border-line)] bg-[var(--bg-paper)] p-5 cutout-hover">
+              <p class="font-mono text-xs uppercase tracking-widest opacity-70 mb-2">TASKS SOLVED</p>
+              <p id="statTasks" class="font-mono text-3xl font-bold mb-1">0</p>
+              <p class="font-mono text-[11px] opacity-60 uppercase">15-MIN TICKS</p>
+            </div>
+            <div class="border border-[var(--border-line)] bg-[var(--bg-paper)] p-5 cutout-hover">
+              <p class="font-mono text-xs uppercase tracking-widest opacity-70 mb-2">SOLVE TIME</p>
+              <p class="font-mono text-3xl font-bold mb-1">&lt; 50ms</p>
+              <p class="font-mono text-[11px] opacity-60 uppercase">CP-SAT DETERMINISTIC</p>
+            </div>
+          </div>
+
+          <div class="space-y-6">
+            <div class="border border-[var(--border-line)] bg-[var(--bg-paper)] p-5 cutout-hover">
+              <div class="flex justify-between items-center mb-4">
+                <h3 class="font-mono text-xs uppercase tracking-widest">Pushups Volume (reps)</h3>
+                <span class="font-mono text-[10px] text-gray-500 uppercase">7-DAY ROLLING</span>
+              </div>
+              <div class="h-48 w-full"><canvas id="pushupChart"></canvas></div>
+            </div>
+
+            <div class="border border-[var(--border-line)] bg-[var(--bg-paper)] p-5 cutout-hover">
+              <div class="flex justify-between items-center mb-4">
+                <h3 class="font-mono text-xs uppercase tracking-widest">Daily Deep Work & Prep (hrs)</h3>
+                <span class="font-mono text-[10px] text-gray-500 uppercase">7-DAY ROLLING</span>
+              </div>
+              <div class="h-48 w-full"><canvas id="studyChart"></canvas></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 4 cols Right: BuJo Rapid Log -->
+        <div class="lg:col-span-4 p-6">
+          <div class="flex justify-between items-center mb-6 pb-2 border-b border-[var(--border-line)]">
+            <h3 class="font-mono text-xs uppercase tracking-widest">Rapid Log Stream</h3>
+            <span class="font-mono text-[10px] text-gray-500 uppercase">BUJO GRAMMAR</span>
+          </div>
+          <div id="bujoStream" class="space-y-4">
+            <!-- Dynamic BuJo items -->
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Syllabus PDF Modal -->
+  <div id="pdfModal" class="hidden fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+    <div class="w-full max-w-lg border border-[var(--text-ink)] bg-[var(--bg-paper)] p-6 shadow-[6px_6px_0px_0px_var(--text-ink)]">
+      <div class="flex justify-between items-center mb-6 pb-2 border-b border-[var(--border-line)]">
+        <h2 class="font-mono text-sm uppercase tracking-widest">Ingest Syllabus / Timetable PDF</h2>
+        <button onclick="closePdfModal()" class="font-mono font-bold text-lg hover:opacity-70">✕</button>
+      </div>
+      <form onsubmit="handlePdfUpload(event)" class="space-y-4">
+        <div>
+          <label class="block font-mono text-xs uppercase tracking-wider mb-1">Subject (Optional)</label>
+          <input id="pdfSubject" type="text" placeholder="e.g. Computer Networks" class="w-full bujo-input py-2 text-sm" />
+        </div>
+        <div>
+          <label class="block font-mono text-xs uppercase tracking-wider mb-2">Course Syllabus / Timetable PDF</label>
+          <input id="pdfFile" type="file" accept=".pdf" class="w-full font-mono text-xs file:mr-4 file:py-2 file:px-4 file:border-0 file:text-xs file:font-mono file:bg-[var(--text-ink)] file:text-[var(--bg-paper)]" required />
+        </div>
+        <div class="flex justify-end gap-3 pt-4 border-t border-[var(--border-line)]">
+          <button type="button" onclick="closePdfModal()" class="px-4 py-2 border border-[var(--border-line)] font-mono text-xs uppercase">Cancel</button>
+          <button type="submit" id="uploadBtn" class="px-5 py-2 bg-[var(--text-ink)] text-[var(--bg-paper)] font-mono text-xs uppercase">Ingest to pgvector</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <script>
+    const USER_ID = '00000000-0000-0000-0000-000000000001';
+    let currentView = 'chat';
+    let isDark = false;
+
+    // Web Audio SoundManager per ARCHITECTURE.md 4.7
+    class SoundManager {
+      constructor() {
+        this.ctx = null;
+      }
+      init() {
+        if (!this.ctx) {
+          const AudioContext = window.AudioContext || window.webkitAudioContext;
+          if (AudioContext) this.ctx = new AudioContext();
+        }
+        if (this.ctx && this.ctx.state === 'suspended') this.ctx.resume();
+      }
+      playSuccessJingle() {
+        this.init();
+        if (!this.ctx) return;
+        const notes = [523.25, 659.25, 783.99, 1046.50];
+        notes.forEach((freq, idx) => {
+          const osc = this.ctx.createOscillator();
+          const gain = this.ctx.createGain();
+          osc.type = 'sine';
+          osc.frequency.setValueAtTime(freq, this.ctx.currentTime + idx * 0.08);
+          gain.gain.setValueAtTime(0.2, this.ctx.currentTime + idx * 0.08);
+          gain.gain.exponentialRampToValueAtTime(0.001, this.ctx.currentTime + idx * 0.08 + 0.25);
+          osc.connect(gain); gain.connect(this.ctx.destination);
+          osc.start(this.ctx.currentTime + idx * 0.08);
+          osc.stop(this.ctx.currentTime + idx * 0.08 + 0.3);
+        });
+      }
+      playSadTrombone() {
+        this.init();
+        if (!this.ctx) return;
+        const notes = [311.13, 293.66, 277.18, 261.63];
+        notes.forEach((freq, idx) => {
+          const osc = this.ctx.createOscillator();
+          const gain = this.ctx.createGain();
+          const startTime = this.ctx.currentTime + idx * 0.32;
+          const duration = idx === 3 ? 0.8 : 0.3;
+          osc.type = 'sawtooth';
+          osc.frequency.setValueAtTime(freq, startTime);
+          if (idx === 3) osc.frequency.exponentialRampToValueAtTime(215.0, startTime + duration);
+          gain.gain.setValueAtTime(0.18, startTime);
+          gain.gain.exponentialRampToValueAtTime(0.001, startTime + duration);
+          osc.connect(gain); gain.connect(this.ctx.destination);
+          osc.start(startTime); osc.stop(startTime + duration);
+        });
+      }
+    }
+    const soundManager = new SoundManager();
+
+    // Web Speech STT and TTS
+    function speakText(text) {
+      if ('speechSynthesis' in window) {
+        window.speechSynthesis.cancel();
+        const u = new SpeechSynthesisUtterance(text.replace(/[\*\_\[\]]/g, ''));
+        u.rate = 1.05;
+        window.speechSynthesis.speak(u);
+      }
+    }
+
+    let recognition = null;
+    let isListening = false;
+    if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
+      const SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
+      recognition = new SpeechRec();
+      recognition.onresult = (e) => {
+        if (e.results[0]) {
+          document.getElementById('chatInput').value = e.results[0][0].transcript;
+        }
+      };
+      recognition.onend = () => {
+        isListening = false;
+        document.getElementById('micBtn').classList.remove('text-red-500', 'animate-pulse');
+      };
+    }
+    function toggleVoiceInput() {
+      if (!recognition) return alert('Speech recognition not supported on this browser.');
+      if (isListening) {
+        recognition.stop();
+      } else {
+        isListening = true;
+        document.getElementById('micBtn').classList.add('text-red-500', 'animate-pulse');
+        recognition.start();
+      }
+    }
+
+    // Theme Toggle
+    function toggleTheme() {
+      isDark = !isDark;
+      document.documentElement.classList.toggle('dark', isDark);
+      initCharts();
+    }
+
+    // View Toggle
+    function toggleView() {
+      const chat = document.getElementById('chatSurface');
+      const ledger = document.getElementById('ledgerSurface');
+      const btn = document.getElementById('viewToggleBtn');
+      if (currentView === 'chat') {
+        chat.classList.add('hidden');
+        ledger.classList.remove('hidden');
+        btn.textContent = '<- CONVERSATION';
+        currentView = 'ledger';
+        loadLedgerData();
+      } else {
+        ledger.classList.add('hidden');
+        chat.classList.remove('hidden');
+        btn.textContent = 'THE LEDGER [->]';
+        currentView = 'chat';
+      }
+    }
+
+    function appendMessage(sender, text, signal) {
+      const container = document.getElementById('messageThread');
+      const isUser = sender === 'user';
+      const timeStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
+      let badge = '';
+      if (signal === 'SUCCESS_JINGLE') badge = `<span class="font-mono text-[9px] uppercase tracking-wider text-green-600 bg-green-500/10 px-1 border border-green-500/30">DOPAMINE JINGLE</span>`;
+      if (signal === 'SAD_TROMBONE') badge = `<span class="font-mono text-[9px] uppercase tracking-wider text-[var(--accent)] bg-[var(--accent)]/10 px-1 border border-[var(--accent)]/30">SAD TROMBONE</span>`;
+
+      const msgHtml = `
+        <div class="flex flex-col ${isUser ? 'items-end' : 'items-start'}">
+          <div class="flex items-center gap-2 mb-1">
+            <span class="font-mono text-[10px] uppercase tracking-widest text-gray-500">${isUser ? 'YOU' : 'AGENT'}</span>
+            <span class="font-mono text-[10px] text-gray-400">${timeStr}</span>
+            ${badge}
+          </div>
+          <div class="max-w-2xl p-4 text-sm leading-relaxed ${isUser ? 'bg-[var(--text-ink)] text-[var(--bg-paper)] border border-[var(--text-ink)]' : 'bg-[var(--bg-paper)] border border-[var(--border-line)]'}">
+            ${text}
+          </div>
+        </div>
+      `;
+      container.insertAdjacentHTML('beforeend', msgHtml);
+      container.scrollTop = container.scrollHeight;
+    }
+
+    let isGrillMode = false;
+    function toggleGrillMode() {
+      isGrillMode = !isGrillMode;
+      const btn = document.getElementById('grillBtn');
+      if (btn) {
+        if (isGrillMode) {
+          btn.className = "bg-black text-white border border-black dark:bg-white dark:text-black dark:border-white font-mono text-xs uppercase px-3 py-2 transition-colors select-none";
+          btn.textContent = "[ GRILL: ON ]";
+        } else {
+          btn.className = "border border-black bg-transparent text-black dark:border-white dark:text-white font-mono text-xs uppercase px-3 py-2 transition-colors select-none";
+          btn.textContent = "[ GRILL: OFF ]";
+        }
+      }
+    }
+
+    async function sendMessage(text) {
+      if (!text.trim()) return;
+      appendMessage('user', text);
+      document.getElementById('chatInput').value = '';
+
+      try {
+        const res = await fetch('/api/conversation', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ user_id: USER_ID, message: text, grill_mode: isGrillMode })
+        });
+        const data = await res.json();
+
+        if (data.audio_signal === 'SUCCESS_JINGLE') soundManager.playSuccessJingle();
+        if (data.audio_signal === 'SAD_TROMBONE') soundManager.playSadTrombone();
+
+        speakText(data.reply);
+        appendMessage('agent', data.reply, data.audio_signal);
+      } catch (err) {
+        appendMessage('agent', 'Error connecting to solver: ' + err.message);
+      }
+    }
+
+    function handleFormSubmit(e) {
+      e.preventDefault();
+      const val = document.getElementById('chatInput').value;
+      sendMessage(val);
+    }
+
+    function runScenario(num) {
+      if (num === 1) sendMessage("I want to start studying Networks more.");
+      if (num === 2) sendMessage("I have my Networks internal next Tuesday!");
+      if (num === 3) sendMessage("Just did 3 sets of 10 pushups and deadlifted 20kg. Having a protein bar now.");
+    }
+
+    // Modal controls
+    function openPdfModal() { document.getElementById('pdfModal').classList.remove('hidden'); }
+    function closePdfModal() { document.getElementById('pdfModal').classList.add('hidden'); }
+
+    async function handlePdfUpload(e) {
+      e.preventDefault();
+      const file = document.getElementById('pdfFile').files[0];
+      const subject = document.getElementById('pdfSubject').value;
+      if (!file) return;
+
+      const fd = new FormData();
+      fd.append('user_id', USER_ID);
+      if (subject) fd.append('subject', subject);
+      fd.append('file', file);
+
+      document.getElementById('uploadBtn').textContent = 'Ingesting...';
+      try {
+        const res = await fetch('/api/upload-syllabus', { method: 'POST', body: fd });
+        const d = await res.json();
+        closePdfModal();
+        soundManager.playSuccessJingle();
+        appendMessage('agent', `Ingested syllabus '${d.filename}' into pgvector (${d.modules_ingested} modules embedded). Ready for coursework query & exam planning.`);
+      } catch (err) {
+        alert('Upload failed: ' + err.message);
+      } finally {
+        document.getElementById('uploadBtn').textContent = 'Ingest to pgvector';
+      }
+    }
+
+    // Charts & Ledger Data
+    let pushupChartInstance = null;
+    let studyChartInstance = null;
+
+    function initCharts() {
+      const textColor = isDark ? '#EBEBEB' : '#111111';
+      const gridColor = isDark ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.06)';
+
+      if (pushupChartInstance) pushupChartInstance.destroy();
+      if (studyChartInstance) studyChartInstance.destroy();
+
+      const pCtx = document.getElementById('pushupChart')?.getContext('2d');
+      if (pCtx) {
+        pushupChartInstance = new Chart(pCtx, {
+          type: 'line',
+          data: {
+            labels: [],
+            datasets: [{
+              label: 'Pushups',
+              data: [],
+              fill: true,
+              borderColor: textColor,
+              backgroundColor: isDark ? 'rgba(235,235,235,0.1)' : 'rgba(17,17,17,0.1)',
+              tension: 0.3
+            }]
+          },
+          options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: { legend: { display: false } },
+            scales: {
+              x: { ticks: { color: textColor, font: { family: 'JetBrains Mono' } }, grid: { display: false } },
+              y: { ticks: { color: textColor, font: { family: 'JetBrains Mono' } }, grid: { color: gridColor } }
+            }
+          }
+        });
+      }
+
+      const sCtx = document.getElementById('studyChart')?.getContext('2d');
+      if (sCtx) {
+        studyChartInstance = new Chart(sCtx, {
+          type: 'line',
+          data: {
+            labels: [],
+            datasets: [{
+              label: 'Prep Hours',
+              data: [],
+              fill: true,
+              borderColor: textColor,
+              backgroundColor: isDark ? 'rgba(235,235,235,0.1)' : 'rgba(17,17,17,0.1)',
+              tension: 0.3
+            }]
+          },
+          options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: { legend: { display: false } },
+            scales: {
+              x: { ticks: { color: textColor, font: { family: 'JetBrains Mono' } }, grid: { display: false } },
+              y: { ticks: { color: textColor, font: { family: 'JetBrains Mono' } }, grid: { color: gridColor } }
+            }
+          }
+        });
+      }
+    }
+
+    async function loadLedgerData() {
+      initCharts();
+      try {
+        const res = await fetch(`/api/telemetry/logs?user_id=${USER_ID}&limit=20`);
+        const logs = await res.json();
+        const stream = document.getElementById('bujoStream');
+        if (logs && logs.length > 0) {
+          stream.innerHTML = logs.map(l => {
+            let glyph = '·';
+            if (l.entry_type === 'task') glyph = 'X';
+            if (l.entry_type === 'event') glyph = 'O';
+            if (l.entry_type === 'metric') glyph = '∷';
+            if (l.entry_type === 'note') glyph = '—';
+            const t = new Date(l.logged_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+            return `
+              <div class="flex items-start gap-4 pb-3 border-b border-dashed border-[var(--border-line)]">
+                <span class="font-mono text-base font-bold w-5 text-center shrink-0">${glyph}</span>
+                <div class="flex-1 min-w-0">
+                  <p class="text-sm font-normal leading-snug break-words">${l.content || 'Logged'}</p>
+                  <p class="font-mono text-[10px] text-gray-500 uppercase tracking-wider mt-1">${t}</p>
+                </div>
+              </div>
+            `;
+          }).join('');
+        } else {
+          stream.innerHTML = `
+            <div class="flex items-start gap-4 pb-3 border-b border-dashed border-[var(--border-line)]">
+              <span class="font-mono text-base font-bold w-5 text-center shrink-0">∷</span>
+              <div class="flex-1"><p class="text-sm">pushups: 3 sets x 10 reps (30 reps)</p><p class="font-mono text-[10px] text-gray-500 mt-1">14:20</p></div>
+            </div>
+            <div class="flex items-start gap-4 pb-3 border-b border-dashed border-[var(--border-line)]">
+              <span class="font-mono text-base font-bold w-5 text-center shrink-0">∷</span>
+              <div class="flex-1"><p class="text-sm">deadlifts: 20.0kg volume logged</p><p class="font-mono text-[10px] text-gray-500 mt-1">14:22</p></div>
+            </div>
+            <div class="flex items-start gap-4 pb-3 border-b border-dashed border-[var(--border-line)]">
+              <span class="font-mono text-base font-bold w-5 text-center shrink-0">—</span>
+              <div class="flex-1"><p class="text-sm">Consumed 1 protein bar</p><p class="font-mono text-[10px] text-gray-500 mt-1">14:25</p></div>
+            </div>
+            <div class="flex items-start gap-4 pb-3 border-b border-dashed border-[var(--border-line)]">
+              <span class="font-mono text-base font-bold w-5 text-center shrink-0">X</span>
+              <div class="flex-1"><p class="text-sm">Completed habit: workout</p><p class="font-mono text-[10px] text-gray-500 mt-1">14:26</p></div>
+            </div>
+          `;
+        }
+
+        const schedRes = await fetch(`/api/schedule/items?user_id=${USER_ID}`);
+        const items = await schedRes.json();
+        if (items) {
+          document.getElementById('statTasks').textContent = items.length;
+          const hasBumped = items.some(it => it.migration_count > 0 && !it.start_time);
+          if (hasBumped) {
+            document.getElementById('statSchedule').textContent = 'LAGGING';
+            document.getElementById('statScheduleSub').textContent = 'PREEMPTION ACTIVE';
+          }
+        }
+      } catch (e) {
+        console.warn('Ledger fetch warning:', e);
+      }
+    }
+  </script>
+</body>
+</html>
