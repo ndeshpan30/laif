@@ -3,16 +3,18 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import Link from 'next/link';
 import { useTheme } from 'next-themes';
-import { ArrowLeft, RefreshCw, Sun, Moon, ArrowUpRight } from 'lucide-react';
+import { ArrowLeft, RefreshCw, Sun, Moon } from 'lucide-react';
 
 import {
   KnowledgeGraphView,
   GraphNode,
-  GraphEdge,
   KnowledgeGraphData,
-} from '@/components/KnowledgeGraphView';
-import { KnowledgeGraphFilters } from '@/components/KnowledgeGraphFilters';
-import { NodeDetailDrawer, ScheduleItemSummary } from '@/components/NodeDetailDrawer';
+} from './KnowledgeGraphView';
+import {
+  KnowledgeGraphFilters,
+  CANONICAL_UI_GROUPS,
+} from './KnowledgeGraphFilters';
+import { NodeDetailDrawer, ScheduleItemSummary } from './NodeDetailDrawer';
 
 const DEFAULT_USER_ID = '00000000-0000-0000-0000-000000000001';
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
@@ -26,6 +28,8 @@ export default function KnowledgeGraphPage() {
   const [rawGraph, setRawGraph] = useState<KnowledgeGraphData>({
     nodes: [],
     edges: [],
+    types_present: [],
+    truncated: false,
     total_nodes: 0,
     total_edges: 0,
   });
@@ -36,9 +40,15 @@ export default function KnowledgeGraphPage() {
   // Selected Node for Detail Drawer
   const [selectedNode, setSelectedNode] = useState<GraphNode | null>(null);
 
-  // Filter States
-  const [showSyllabus, setShowSyllabus] = useState(true);
-  const [showConstraints, setShowConstraints] = useState(true);
+  // Filter States: Dynamic UI Groups
+  const [activeGroups, setActiveGroups] = useState<Set<string>>(
+    () => new Set<string>(CANONICAL_UI_GROUPS)
+  );
+
+  // Cross-Domain Links Only Toggle
+  const [crossDomainOnly, setCrossDomainOnly] = useState<boolean>(false);
+
+  // Subject and Similarity Slider
   const [selectedSubject, setSelectedSubject] = useState('ALL');
   const [threshold, setThreshold] = useState(0.60);
 
@@ -46,17 +56,19 @@ export default function KnowledgeGraphPage() {
   const loadData = useCallback(async () => {
     setIsLoading(true);
     try {
-      // 1. Fetch Knowledge Graph from backend (baseline threshold 0.50 for client-side slider fluidity)
+      // 1. Fetch Knowledge Graph from backend
       const graphRes = await fetch(
-        `${API_URL}/api/knowledge-graph?user_id=${DEFAULT_USER_ID}&threshold=0.50&top_k=5`
+        `${API_URL}/api/knowledge-graph?user_id=${DEFAULT_USER_ID}&min_similarity=0.50&limit=300`
       );
       if (graphRes.ok) {
         const data = await graphRes.json();
         setRawGraph({
           nodes: data.nodes || [],
           edges: data.edges || [],
-          total_nodes: data.total_nodes || 0,
-          total_edges: data.total_edges || 0,
+          types_present: data.types_present || [],
+          truncated: Boolean(data.truncated),
+          total_nodes: data.total_nodes ?? (data.nodes ? data.nodes.length : 0),
+          total_edges: data.total_edges ?? (data.edges ? data.edges.length : 0),
         });
       }
 
@@ -89,12 +101,25 @@ export default function KnowledgeGraphPage() {
     return Array.from(subjects).sort();
   }, [rawGraph.nodes]);
 
+  // Handle toggling a UI group
+  const handleToggleGroup = useCallback((group: string) => {
+    setActiveGroups((prev) => {
+      const next = new Set(prev);
+      if (next.has(group)) {
+        next.delete(group);
+      } else {
+        next.add(group);
+      }
+      return next;
+    });
+  }, []);
+
   // Compute Client-Filtered Graph with Dynamic Degree Calculation
   const filteredData = useMemo<KnowledgeGraphData>(() => {
-    // 1. Filter Nodes by Type and Subject
+    // 1. Filter Nodes by Active UI Group and Subject
     const nodes = rawGraph.nodes.filter((node) => {
-      if (!showSyllabus && node.type === 'syllabus_module') return false;
-      if (!showConstraints && node.type === 'episodic_constraint') return false;
+      const grp = node.group || 'OTHER';
+      if (!activeGroups.has(grp)) return false;
       if (selectedSubject !== 'ALL' && node.subject !== selectedSubject) return false;
       return true;
     });
@@ -129,10 +154,12 @@ export default function KnowledgeGraphPage() {
     return {
       nodes: updatedNodes,
       edges,
+      types_present: rawGraph.types_present,
+      truncated: rawGraph.truncated,
       total_nodes: rawGraph.total_nodes,
       total_edges: rawGraph.total_edges,
     };
-  }, [rawGraph, showSyllabus, showConstraints, selectedSubject, threshold]);
+  }, [rawGraph, activeGroups, selectedSubject, threshold]);
 
   // Update selectedNode if its degree was recomputed in filteredData
   useEffect(() => {
@@ -198,27 +225,28 @@ export default function KnowledgeGraphPage() {
         </h1>
         <div className="border-b-4 border-[var(--text-ink)] mb-2" />
         <p className="font-mono text-xs text-gray-500 uppercase tracking-widest">
-          Vol. 1 | Topological Context Map & Semantic Constraint Web — Vector Embedding Derived
+          Vol. 1 | Topological Context Map & Multi-Domain Semantic Knowledge Graph
         </p>
       </header>
 
       {/* Main Container with Collapsed Grid Borders */}
       <div className="border border-[var(--border-line)] bg-[var(--bg-paper)] shadow-[3px_3px_0px_0px_rgba(0,0,0,0.06)]">
-        {/* Editorial Filter Toolbar */}
+        {/* Editorial Dynamic Filter Toolbar */}
         <KnowledgeGraphFilters
-          showSyllabus={showSyllabus}
-          onToggleSyllabus={() => setShowSyllabus((prev) => !prev)}
-          showConstraints={showConstraints}
-          onToggleConstraints={() => setShowConstraints((prev) => !prev)}
+          typesPresent={rawGraph.types_present || []}
+          activeGroups={activeGroups}
+          onToggleGroup={handleToggleGroup}
+          crossDomainOnly={crossDomainOnly}
+          onToggleCrossDomain={() => setCrossDomainOnly((prev) => !prev)}
           selectedSubject={selectedSubject}
           onSelectSubject={(subj) => setSelectedSubject(subj)}
           subjectOptions={subjectOptions}
           threshold={threshold}
           onChangeThreshold={(val) => setThreshold(val)}
           visibleNodesCount={filteredData.nodes.length}
-          totalNodesCount={rawGraph.nodes.length}
+          totalNodesCount={rawGraph.total_nodes || rawGraph.nodes.length}
           visibleEdgesCount={filteredData.edges.length}
-          totalEdgesCount={rawGraph.edges.length}
+          totalEdgesCount={rawGraph.total_edges || rawGraph.edges.length}
         />
 
         {/* Split Layout: Force-Directed Canvas + Detail Drawer */}
@@ -230,7 +258,8 @@ export default function KnowledgeGraphPage() {
               onSelectNode={(node) => setSelectedNode(node)}
               selectedNodeId={selectedNode?.id}
               className="w-full h-full border-0"
-              totalContextCount={rawGraph.nodes.length}
+              totalContextCount={rawGraph.total_nodes}
+              crossDomainOnly={crossDomainOnly}
             />
           </div>
 

@@ -10,6 +10,7 @@
   --border-line: #E5E5E0;
   --dot-color: rgba(17, 17, 17, 0.1);
   --accent: #CC0000;
+  --ochre: #B45309;
   --font-inter: 'Inter', sans-serif;
   --font-jetbrains: 'JetBrains Mono', monospace;
   --font-playfair: 'Playfair Display', serif;
@@ -21,6 +22,7 @@
   --border-line: #333333;
   --dot-color: rgba(235, 235, 235, 0.08);
   --accent: #CC0000;
+  --ochre: #D97706;
 }
 
 

@@ -6,6 +6,7 @@ from app.api.telemetry import router as telemetry_router
 from app.api.conversation import router as conversation_router
 from app.api.semantic import router as semantic_router
 from app.api.knowledge_graph import router as knowledge_graph_router
+from app.api.audio import router as audio_router
 
 __all__ = [
     "health_router",
@@ -16,4 +17,5 @@ __all__ = [
     "conversation_router",
     "semantic_router",
     "knowledge_graph_router",
+    "audio_router",
 ]

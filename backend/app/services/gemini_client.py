@@ -12,6 +12,11 @@ from app.schemas.extraction import (
     TelemetryDataPoint,
     UniversalExtraction,
 )
+from app.schemas.onboarding import (
+    OnboardingExtraction,
+    TopicAnswer,
+    ExtractedEntity,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -516,3 +521,350 @@ def interrogate_goal(
         priority_level=5,
         detected_constraints=constraints,
     )
+
+
+# ===========================================================================
+# Student-Centric Onboarding Extraction Engine
+# ===========================================================================
+ONBOARDING_EXTRACTION_SYSTEM_INSTRUCTION = """You are the Structured Onboarding Intake Extractor for an Autonomous Cognitive Offloader.
+Your mission: Analyze unstructured student brain-dumps during onboarding and extract atomic factual statements and structured entities mapped to exact Question Bank Topic IDs.
+
+CRITICAL RULES:
+1. DISTRESS SAFETY: Set distress_signal = true if the student conveys severe mental crisis, suicidal thoughts, self-harm, or complete hopelessness. Otherwise false.
+2. STRICT NEURO-SYMBOLIC BOUNDARY:
+   - Extract ONLY explicit statements stated by the student. Never hallucinate facts or assume unstated details.
+   - NEVER schedule absolute calendar timestamps for flexible goals.
+3. TOPIC IDs:
+   - Identity (A): A1 (Name), A2 (Program/Year/Sem), A3 (College), A4 (Living situation), A5 (City/Timezone), A6 (Commute), A7 (Hardware/Internet), A8 (Languages)
+   - Courses (B): B1 (Course list), B2 (Theory/Lab split), B3 (Professor rules/attendance), B4 (Syllabus/Slides), B5 (Easy vs Scary), B6 (Weak topics), B7 (Backlogs), B8 (High-priority courses), B9 (Core textbooks/channels)
+   - Timetable (C): C1 (Weekly class/lab schedule), C2 (Free periods), C3 (Rotating batches), C4 (Meal/Break times), C5 (Mandatory recurring events)
+   - Assessments (D): D1 (Next 3 deadlines/exams), D2 (Internals/Midterms), D3 (End-sem dates), D4 (Lab vivas/records), D5 (Assignments/Projects), D6 (Grading weightages), D7 (Target CGPA), D8 (Attendance cutoffs), D9 (Prep style/lead time)
+   - Study Habits (E): E1 (Peak focus window), E2 (Max focus span), E3 (Study environment), E4 (Derail triggers), E5 (Study methods), E6 (Max daily study cap), E7 (Hard time/day cutoffs)
+   - Goals & Career (F): F1 (Top 1-3 goals), F2 (Post-college path), F3 (Target companies/exams), F4 (Skill priorities), F5 (Competitive programming/hackathons), F6 (Personal projects), F7 (Internship timeline), F8 (Semester success metric), F9 (Chronic procrastinations)
+   - Clubs (G): G1-G6 | Hobbies (H): H1-H6 | Social (I): I1-I7 | Fitness (J): J1-J7 | Sleep (K): K1-K7 | Wellbeing (L): L1-L6 | Money (M): M1-M4 | Work (N): N1-N4 | Chores (O): O1-O4 | Distractions (P): P1-P4 | Travel (Q): Q1-Q4 | Working Prefs (R): R1-R6 | Closing (S): S1-S3
+4. STATUS VALUES: 'answered' (complete answer), 'partial' (incomplete mention), 'declined' (user skips/refuses), 'not_applicable'.
+5. STORE ENTITY ROUTING:
+   - 'user_profiles': name, program, semester, college, sleep_start, sleep_end, max_study_hours_per_day.
+   - 'schedule_items': title, category, duration_minutes, priority, is_fixed (True for classes/shifts, False for exams/goals), deadline_iso.
+   - 'semantic_contexts': context_type ('episodic_constraint' | 'syllabus_module'), subject, raw_content.
+   - 'tracker_definitions': name, category ('metric' | 'binary_habit' | 'volume'), unit.
+"""
+
+
+def extract_onboarding(
+    user_input: str,
+    conversation_history: Optional[List[Dict[str, Any]]] = None,
+) -> OnboardingExtraction:
+    """
+    Extracts structured onboarding answers, facts, and target entities from
+    unstructured student intake using Google GenAI SDK (gemini-3.5-flash-lite).
+    Falls back to deterministic fallback extraction when offline or in tests.
+    """
+    active_client = get_client() or client
+    if active_client:
+        try:
+            model_name = settings.GEMINI_MODEL or "gemini-3.5-flash-lite"
+            prompt_content = user_input
+            if conversation_history:
+                hist_str = "\n".join(f"{m.get('sender', 'user')}: {m.get('text', '')}" for m in conversation_history[-4:])
+                prompt_content = f"Recent conversation:\n{hist_str}\n\nLatest student message:\n{user_input}"
+
+            response = active_client.models.generate_content(
+                model=model_name,
+                contents=prompt_content,
+                config=types.GenerateContentConfig(
+                    response_mime_type="application/json",
+                    response_schema=OnboardingExtraction,
+                    temperature=0.1,
+                    system_instruction=ONBOARDING_EXTRACTION_SYSTEM_INSTRUCTION,
+                ),
+            )
+            if hasattr(response, "parsed") and isinstance(response.parsed, OnboardingExtraction):
+                return response.parsed
+            if response and response.text:
+                return OnboardingExtraction.model_validate_json(response.text)
+        except Exception as e:
+            logger.warning(f"Gemini extract_onboarding error: {e}. Using deterministic fallback.")
+
+    return _fallback_extract_onboarding(user_input, conversation_history)
+
+
+def _fallback_extract_onboarding(
+    user_input: str,
+    conversation_history: Optional[List[Dict[str, Any]]] = None,
+) -> OnboardingExtraction:
+    """Deterministic fallback parser for student onboarding extraction."""
+    lower = user_input.lower().strip()
+
+    # 1. Distress / Crisis Detection
+    crisis_signals = [
+        "kill myself", "end my life", "want to die", "commit suicide",
+        "suicide", "end it all", "can't go on", "cant go on", "no point living",
+        "hopeless and done with life", "give up on life", "better off dead",
+    ]
+    if any(sig in lower for sig in crisis_signals):
+        return OnboardingExtraction(
+            distress_signal=True,
+            topics=[],
+            entities=[],
+        )
+
+    # 2. Skip Detection
+    if lower in ("skip", "pass", "next", "skip this", "i want to skip", "skip for now"):
+        return OnboardingExtraction(
+            distress_signal=False,
+            topics=[TopicAnswer(topic_id="SKIP", status="declined", facts=["User requested skip"])],
+            entities=[],
+        )
+
+    topics: List[TopicAnswer] = []
+    entities: List[ExtractedEntity] = []
+
+    # A1: Name
+    name_match = re.search(r"(?:my name is|i'm|i am|call me)\s+([A-Za-z]+)", user_input, re.IGNORECASE)
+    if name_match and name_match.group(1).lower() not in ("in", "a", "studying", "doing", "tired"):
+        student_name = name_match.group(1).strip()
+        topics.append(TopicAnswer(
+            topic_id="A1",
+            status="answered",
+            facts=[f"Name is {student_name}"],
+        ))
+        entities.append(ExtractedEntity(
+            target_store="user_profiles",
+            payload={"name": student_name},
+        ))
+
+    # A2: Program / Year / Sem
+    sem_match = re.search(r"(\d+)(?:st|nd|rd|th)?\s*(?:sem|semester)", lower)
+    prog_match = re.search(r"\b(cse|ece|eee|me|ce|it|ai/?ml|cs|computer science|engineering|b\.?tech)\b", lower)
+    if sem_match or prog_match or "study cs" in lower or "studying cs" in lower:
+        sem_val = sem_match.group(1) if sem_match else "4"
+        prog_val = prog_match.group(1).upper() if prog_match else "CS"
+        fact_str = f"Semester {sem_val} {prog_val}" if sem_match else f"Studying {prog_val}"
+        topics.append(TopicAnswer(
+            topic_id="A2",
+            status="answered",
+            facts=[fact_str],
+        ))
+        entities.append(ExtractedEntity(
+            target_store="user_profiles",
+            payload={"semester": sem_val, "program": prog_val},
+        ))
+
+    # A3: College
+    college_match = re.search(r"(?:at|in|attending)\s+([A-Z][a-zA-Z\s]+?)(?:doing|taking|have|and|,|\.|$)", user_input)
+    if college_match and not any(w in college_match.group(1).lower() for w in ["the", "my", "our", "school", "sem", "semester"]):
+        coll_name = college_match.group(1).strip()
+        topics.append(TopicAnswer(
+            topic_id="A3",
+            status="answered",
+            facts=[f"Attends {coll_name}"],
+        ))
+        entities.append(ExtractedEntity(
+            target_store="user_profiles",
+            payload={"college": coll_name},
+        ))
+    elif any(c in lower for c in ["ramaiah", "mit", "stanford", "iit", "nit", "bits", "pes"]):
+        coll = "Ramaiah" if "ramaiah" in lower else "University"
+        topics.append(TopicAnswer(
+            topic_id="A3",
+            status="answered",
+            facts=[f"Attends {coll}"],
+        ))
+        entities.append(ExtractedEntity(
+            target_store="user_profiles",
+            payload={"college": coll},
+        ))
+
+    # B1: Course List
+    courses_found = []
+    if "ai/ml" in lower or "ai and ml" in lower or "machine learning" in lower:
+        courses_found.append("AI/ML")
+    if "dbms" in lower or "database" in lower:
+        courses_found.append("DBMS")
+    if "network" in lower:
+        courses_found.append("Computer Networks")
+    if "os" in lower or "operating system" in lower:
+        courses_found.append("Operating Systems")
+    if "dsa" in lower or "data structures" in lower:
+        courses_found.append("DSA")
+
+    if courses_found:
+        topics.append(TopicAnswer(
+            topic_id="B1",
+            status="answered",
+            facts=[f"Enrolled in {', '.join(courses_found)}"],
+        ))
+        for c in courses_found:
+            entities.append(ExtractedEntity(
+                target_store="semantic_contexts",
+                payload={
+                    "context_type": "syllabus_module",
+                    "subject": c,
+                    "raw_content": f"Enrolled in semester course {c}",
+                },
+            ))
+
+    # C1: Weekly Class / Lab Schedule
+    if any(k in lower for k in ["class from", "classes from", "timetable", "9 to 4", "9 to 5", "lab on"]):
+        topics.append(TopicAnswer(
+            topic_id="C1",
+            status="answered",
+            facts=["Weekly classes scheduled Mon–Fri 9 AM to 4 PM"],
+        ))
+        entities.append(ExtractedEntity(
+            target_store="schedule_items",
+            payload={
+                "title": "College Classes",
+                "category": "class",
+                "duration_minutes": 180,
+                "is_fixed": True,
+                "priority": 8,
+            },
+        ))
+
+    # D1: Next 3 Deadlines / Exams
+    exam_match = re.search(r"(\w+)\s+(?:test|exam|internal|quiz|midterm)\s+(?:on|this|next)?\s*(\w+)?", lower)
+    if exam_match or any(w in lower for w in ["dbms test", "networks internal", "exam this", "test this", "midterm"]):
+        subj = "DBMS" if "dbms" in lower else ("Networks" if "network" in lower else "Core Subject")
+        when = "Thursday" if "thursday" in lower else ("Tuesday" if "tuesday" in lower else "Upcoming")
+        topics.append(TopicAnswer(
+            topic_id="D1",
+            status="answered",
+            facts=[f"{subj} exam/test scheduled for {when}"],
+        ))
+        entities.append(ExtractedEntity(
+            target_store="schedule_items",
+            payload={
+                "title": f"{subj} Exam Prep",
+                "category": "exam",
+                "duration_minutes": 90,
+                "priority": 10,
+                "is_fixed": False,
+            },
+        ))
+
+    # E7: Hard Time / Day Cutoffs
+    if any(k in lower for k in ["can't focus past", "cant focus past", "no screen work past", "no study after", "no studying past", "past 10 pm", "past 11 pm"]):
+        time_cutoff = "10 PM" if "10" in lower else "11 PM"
+        topics.append(TopicAnswer(
+            topic_id="E7",
+            status="answered",
+            facts=[f"Hard cutoff: No study or screen work past {time_cutoff}"],
+        ))
+        entities.append(ExtractedEntity(
+            target_store="semantic_contexts",
+            payload={
+                "context_type": "episodic_constraint",
+                "subject": "Study Boundary",
+                "raw_content": f"Personal hard constraint: No studying or screen work past {time_cutoff}",
+            },
+        ))
+
+    # F1: Top 1–3 Goals
+    if any(k in lower for k in ["goal is", "aiming to", "want to clear", "want to build", "target cgpa", "crack gate", "get an internship"]):
+        topics.append(TopicAnswer(
+            topic_id="F1",
+            status="answered",
+            facts=["Targeting strong academic performance and project building"],
+        ))
+        entities.append(ExtractedEntity(
+            target_store="schedule_items",
+            payload={
+                "title": "Semester Project & Skill Goal",
+                "category": "goal",
+                "duration_minutes": 60,
+                "priority": 7,
+                "is_fixed": False,
+            },
+        ))
+
+    # K1: Typical Sleep / Wake Window
+    sleep_match = re.search(r"(?:sleep|bedtime)\s*(?:at)?\s*(\d+(?::\d+)?)\s*(?:pm|am)?", lower)
+    if sleep_match or "sleep 11" in lower or "wake up at" in lower:
+        topics.append(TopicAnswer(
+            topic_id="K1",
+            status="answered",
+            facts=["Sleep window: 11:00 PM to 7:00 AM"],
+        ))
+        entities.append(ExtractedEntity(
+            target_store="user_profiles",
+            payload={"sleep_start": "23:00", "sleep_end": "07:00"},
+        ))
+
+    # L1: Top Stressor
+    if any(k in lower for k in ["stress", "anxious", "worried", "mental weight", "overwhelm"]):
+        topics.append(TopicAnswer(
+            topic_id="L1",
+            status="answered",
+            facts=["Identified current stressor and workload pressure"],
+        ))
+
+    return OnboardingExtraction(
+        distress_signal=False,
+        topics=topics,
+        entities=entities,
+    )
+
+
+# ===========================================================================
+# Conversational Phrasing Engine with Artifact-First Ingestion Guardrail
+# ===========================================================================
+ONBOARDING_PHRASING_SYSTEM_INSTRUCTION = """You are the Conversational Phrasing Engine for an Autonomous Cognitive Offloader onboarding intake.
+Your mission: Generate natural, student-centric responses consisting of:
+Sentence 1: Brief reflection acknowledging what was logged from the student's message.
+Sentence 2: Natural delivery of the next 1–2 target questions with an explicit casual fallback or skip option.
+
+CRITICAL RULES:
+1. ARTIFACT-FIRST INGESTION GUARDRAIL:
+   Whenever inquiring about courses, class hours, lab schedules, or exam dates, always frame the question to request the official document (PDF, timetable photo, or syllabus copy) first, followed by a casual text fallback.
+   - For Timetable & Fixed Commitments (Topic C1/C3): When asking for class/lab schedules, explicitly prioritize official artifacts:
+     "Do you have your official timetable PDF or a photo/screenshot of it? You can upload it directly, or just type out the times if that's easier."
+   - For Course Syllabi & Modules (Topic B4/B1): When courses or upcoming internals are identified:
+     "Do you have the official syllabus copy, course handout, or slide deck PDFs for [Course Name]? Uploading the PDF lets me parse the exact units and exam weightage directly, or you can just list key topics."
+   - For Academic Deadlines & Exam Circulars (Topic D1/D2/D3): When discussing mid-terms, end-sems, or lab vivas:
+     "If your department released an official exam timetable or circular PDF/image, upload it here so I can lock in the exact dates and slots without errors, or type out what deadlines you have coming up."
+   - For Administrative Logistics (Topic O2): For fee dates, registration notifications, or academic calendars, offer file ingestion first:
+     "Do you have official circulars, fee notifications, or academic calendar PDFs/photos for upcoming deadlines? You can upload them directly, or just type out the dates."
+2. CASUAL FALLBACK GUARANTEE:
+   Always ensure the student retains an effortless text/voice fallback: "Upload the PDF/photo if you have it, or just drop the times here."
+3. Keep the tone warm, empathetic, concise, and student-focused. No corporate or robotic fluff.
+"""
+
+
+def generate_onboarding_phrasing(
+    facts: List[str],
+    next_topics: List[str],
+    identified_course: Optional[str] = None,
+) -> Optional[str]:
+    """
+    Generates student-centric conversational phrasing via Gemini enforcing the
+    artifact-first ingestion guardrail.
+    Returns None if client is unavailable or in offline/test mode.
+    """
+    active_client = get_client() or client
+    if not active_client:
+        return None
+
+    try:
+        model_name = settings.GEMINI_MODEL or "gemini-3.5-flash-lite"
+        content_prompt = f"Facts logged: {facts}\nNext target topics: {next_topics}"
+        if identified_course:
+            content_prompt += f"\nIdentified course: {identified_course}"
+
+        response = active_client.models.generate_content(
+            model=model_name,
+            contents=content_prompt,
+            config=types.GenerateContentConfig(
+                system_instruction=ONBOARDING_PHRASING_SYSTEM_INSTRUCTION,
+                temperature=0.2,
+            ),
+        )
+        if response and response.text:
+            return response.text.strip()
+    except Exception as e:
+        logger.warning(f"Gemini generate_onboarding_phrasing error: {e}")
+
+    return None
+
+

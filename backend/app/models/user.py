@@ -14,6 +14,10 @@ class UserProfile(Base):
     sleep_end = Column(Time, nullable=False, default=datetime.time(7, 0, 0))
     buffer_minutes = Column(Integer, nullable=False, default=15)
     max_study_hours_per_day = Column(Integer, nullable=False, default=8)
+    name = Column(String(255), nullable=True)
+    program = Column(String(255), nullable=True)
+    semester = Column(String(50), nullable=True)
+    college = Column(String(255), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), default=lambda: datetime.datetime.now(datetime.timezone.utc))
 
     semantic_contexts = relationship("SemanticContext", back_populates="user", cascade="all, delete-orphan")
@@ -21,3 +25,4 @@ class UserProfile(Base):
     tracker_definitions = relationship("TrackerDefinition", back_populates="user", cascade="all, delete-orphan")
     telemetry_logs = relationship("TelemetryLog", back_populates="user", cascade="all, delete-orphan")
     context_edges = relationship("ContextEdge", back_populates="user", cascade="all, delete-orphan")
+    onboarding_coverage = relationship("OnboardingCoverage", back_populates="user", cascade="all, delete-orphan")

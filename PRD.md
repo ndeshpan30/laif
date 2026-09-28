@@ -75,7 +75,7 @@ No single product combines Socratic goal clarification, deterministic conflict-f
 
 ## 7. Functional Requirements
 
-- **Conversational Engine**: chat-first interface (primary screen); optional voice input via browser mic + Google Gemini API audio transcription, with spoken responses via the browser's native Web Speech API (`speechSynthesis`), kept under ~15–20 words for latency and listenability.
+- **Conversational Engine**: chat-first interface (primary screen); optional voice input via browser mic + local-first dictation pipeline (`faster-whisper` CPU ASR) with WhimprFlow layout normalization and LLM disfluency cleanup, with spoken responses via the browser's native Web Speech API (`speechSynthesis`), kept under ~15–20 words for latency and listenability.
 - **Document Ingestion**: PDF upload for timetables, syllabi, assignments, lab schedules; content is chunked, embedded, and made retrievable; missing documents are not required — content can accumulate purely from conversation.
 - **Solver Integration**: every schedule mutation (new task, new exam, habit registration) triggers a CP-SAT re-solve over a rolling 7–14 day horizon; results are pushed back to the client in near real time.
 - **Telemetry & Dynamic Trackers**: any user-defined tracker can be created via a short Socratic setup dialogue and logged against thereafter via free-text mentions.
@@ -88,10 +88,11 @@ No single product combines Socratic goal clarification, deterministic conflict-f
 |---|---|
 | Frontend | Next.js (React, App Router, PWA), Tailwind, Recharts |
 | Backend API | FastAPI (Python 3.11+), Pydantic v2 |
-| **LLM provider (primary)** | **Google Gemini API (`gemini-1.5-flash`)** — Socratic interrogation ("Grill Mode"), Universal Telemetry extraction, response synthesis, and speech transcription, all via native Structured Outputs (`response_schema`) |
+| **LLM provider (primary)** | **Google Gemini API (`gemini-1.5-flash`)** — Socratic interrogation ("Grill Mode"), Universal Telemetry extraction, text disfluency cleanup, and response synthesis via native Structured Outputs (`response_schema`) |
 | Constraint solver | Google OR-Tools CP-SAT |
 | Database | PostgreSQL + pgvector (Supabase / Neon) |
 | Document ingestion | PyMuPDF / pdfplumber |
+| **Speech-to-Text** | **Local-first `faster-whisper` (CTranslate2/CPU) + WhimprFlow pipeline** — zero cloud 503 errors, unconditional raw text fallback |
 | Text-to-speech | Browser-native Web Speech API |
 | Audio feedback | Web Audio API |
 
@@ -99,7 +100,7 @@ The LLM model ID is a single environment-level setting (`GEMINI_MODEL`), so it c
 
 ## 9. Performance & Reliability Requirements
 
-- Voice round-trip latency target: < 1.5s end-to-end. The low-latency target for Socratic interrogation and telemetry extraction is unchanged by the move to Gemini; each LLM call must fit inside this budget.
+- Voice round-trip latency target: < 1.5s end-to-end. Speech-to-text runs locally on CPU to eliminate cloud capacity spikes and network latency. The low-latency target for Socratic interrogation and telemetry extraction is unchanged by the move to Gemini; each LLM call must fit inside this budget.
 - **Model selection rationale**: `gemini-1.5-flash` was selected to balance high-speed conversational inference with strict JSON schema adherence — the Flash tier keeps interrogation and extraction turns fast, while native structured outputs (`response_schema`) keep every response schema-valid.
 - **Extraction reliability**: 100% of LLM extraction responses must parse into the target Pydantic model. Structured outputs guarantee response *shape*; backend validation still checks values, and any failure triggers one retry and then a clarifying question rather than a silent write.
 - CP-SAT solve time: < 50ms per re-plan.

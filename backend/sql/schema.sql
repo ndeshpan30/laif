@@ -96,3 +96,16 @@ CREATE TABLE IF NOT EXISTS telemetry_logs (
 );
 CREATE INDEX IF NOT EXISTS idx_telemetry_user_date ON telemetry_logs (user_id, logged_date);
 CREATE INDEX IF NOT EXISTS idx_telemetry_gin ON telemetry_logs USING gin (metadata);
+
+-- Student-Centric 'Describe Your Life' Onboarding Intake Coverage
+CREATE TABLE IF NOT EXISTS onboarding_coverage (
+  user_id UUID NOT NULL REFERENCES user_profiles(user_id) ON DELETE CASCADE,
+  topic_id VARCHAR(10) NOT NULL,
+  status VARCHAR(20) NOT NULL DEFAULT 'unknown', -- 'unknown' | 'partial' | 'answered' | 'skipped' | 'declined' | 'not_applicable'
+  asked_count INT NOT NULL DEFAULT 0,
+  last_asked_at TIMESTAMP WITH TIME ZONE,
+  answered_via UUID NULL,
+  PRIMARY KEY (user_id, topic_id)
+);
+CREATE INDEX IF NOT EXISTS idx_onboarding_cov_user_status ON onboarding_coverage(user_id, status);
+

@@ -12,6 +12,7 @@ module.exports = {
         ink: 'var(--text-ink)',
         divider: 'var(--border-line)',
         accent: 'var(--accent)',
+        ochre: 'var(--ochre)',
       },
       fontFamily: {
         serif: ['var(--font-playfair)', 'Playfair Display', 'serif'],

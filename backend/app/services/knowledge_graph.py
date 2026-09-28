@@ -1,9 +1,10 @@
 import datetime
 import hashlib
 import logging
+from collections import Counter
 from typing import Dict, Any, List, Optional, Tuple, Set
 from uuid import UUID
-from sqlalchemy import event, select, delete
+from sqlalchemy import event, select, delete, func
 from sqlalchemy.orm import Session
 
 from app.models.semantic import SemanticContext, ContextEdge, compute_content_hash
@@ -102,8 +103,24 @@ def create_context_edge(
 ) -> ContextEdge:
     """
     Creates and persists a ContextEdge enforcing canonical ordering: source_id < target_id.
+    Enforces multi-tenant boundary: both endpoints must exist and belong to user_id.
     """
     src, tgt = order_edge_endpoints(source_id, target_id)
+
+    # Multi-tenant safety verification
+    valid_count = (
+        db.query(SemanticContext)
+        .filter(
+            SemanticContext.user_id == user_id,
+            SemanticContext.id.in_([src, tgt]),
+        )
+        .count()
+    )
+    if valid_count < 2:
+        raise ValueError(
+            f"Multi-tenant violation: both endpoints {src} and {tgt} must exist and belong to user {user_id}"
+        )
+
     edge = ContextEdge(
         user_id=user_id,
         source_id=src,
@@ -657,26 +674,203 @@ def generate_node_label(item: SemanticContext) -> str:
     return label
 
 
+def recompute_edges_for(db: Session, node_id: Any) -> List[ContextEdge]:
+    """
+    Dynamic Edge Generation Engine (Design Decision D5 Phase 2).
+    Recomputes semantic edges for a given context node:
+    - Fetches nearest neighbors using pgvector cosine distance across all context types.
+    - Top-K logic: Selects top 6 neighbors with cosine similarity >= 0.72.
+    - Cross-Domain Guarantee: Selects up to 2 additional neighbors belonging to DIFFERENT
+      UI groups if similarity >= 0.60, setting cross_domain=True.
+    - Enforces canonical edge storage: source_id < target_id and unique (user_id, source_id, target_id, kind).
+    - Purges stale semantic edges for this node before writing new edges.
+    """
+    if isinstance(node_id, str):
+        try:
+            node_id = UUID(node_id)
+        except ValueError:
+            logger.warning("Invalid UUID format provided to recompute_edges_for: %s", node_id)
+            return []
+
+    target_node = (
+        db.query(SemanticContext)
+        .filter(SemanticContext.id == node_id)
+        .first()
+    )
+    if not target_node:
+        logger.warning("Target node %s not found for recompute_edges_for", node_id)
+        return []
+
+    if not target_node.embedding:
+        logger.debug("Target node %s has no embedding; purging stale semantic edges", node_id)
+        db.query(ContextEdge).filter(
+            ContextEdge.user_id == target_node.user_id,
+            ContextEdge.kind == "semantic",
+            (ContextEdge.source_id == target_node.id) | (ContextEdge.target_id == target_node.id),
+        ).delete(synchronize_session="fetch")
+        db.commit()
+        invalidate_knowledge_graph_cache(target_node.user_id)
+        return []
+
+    user_id = target_node.user_id
+    target_group = get_canonical_group(target_node.context_type)
+
+    # 1. Fetch nearest neighbors across all context types using pgvector or cosine similarity
+    scored_candidates: List[Tuple[SemanticContext, float]] = []
+    use_pgvector = False
+
+    if db.bind and db.bind.dialect.name == "postgresql":
+        try:
+            distance_expr = SemanticContext.embedding.cosine_distance(target_node.embedding)
+            pg_candidates = (
+                db.query(SemanticContext, (1.0 - distance_expr).label("sim"))
+                .filter(
+                    SemanticContext.user_id == user_id,
+                    SemanticContext.id != target_node.id,
+                    SemanticContext.embedding.isnot(None),
+                )
+                .order_by(distance_expr.asc())
+                .all()
+            )
+            scored_candidates = [(cand, float(sim)) for cand, sim in pg_candidates]
+            use_pgvector = True
+        except Exception as e:
+            logger.debug("pgvector cosine_distance failed or unsupported: %s", e)
+            use_pgvector = False
+
+    if not use_pgvector:
+        target_emb = [float(x) for x in target_node.embedding]
+        candidates = (
+            db.query(SemanticContext)
+            .filter(
+                SemanticContext.user_id == user_id,
+                SemanticContext.id != target_node.id,
+                SemanticContext.embedding.isnot(None),
+            )
+            .all()
+        )
+        for cand in candidates:
+            if not cand.embedding:
+                continue
+            cand_emb = [float(x) for x in cand.embedding]
+            cos_sim = cosine_similarity(target_emb, cand_emb)
+            node_sim = compute_node_similarity(target_node, target_emb, cand, cand_emb)
+            sim = max(cos_sim, node_sim)
+            scored_candidates.append((cand, sim))
+
+        scored_candidates.sort(key=lambda x: x[1], reverse=True)
+
+    # 2. Top-K logic: Select top 6 neighbors with cosine similarity >= 0.72
+    selected_map: Dict[UUID, Tuple[SemanticContext, float, bool]] = {}
+
+    top_6 = [(cand, sim) for cand, sim in scored_candidates if sim >= 0.72][:6]
+    for cand, sim in top_6:
+        cand_group = get_canonical_group(cand.context_type)
+        is_cross = (cand_group != target_group)
+        selected_map[cand.id] = (cand, sim, is_cross)
+
+    # 3. Cross-Domain Guarantee: Select up to 2 additional neighbors belonging to
+    # DIFFERENT UI groups if similarity >= 0.60. Set cross_domain = True.
+    cross_domain_added = 0
+    for cand, sim in scored_candidates:
+        if cross_domain_added >= 2:
+            break
+        if cand.id in selected_map:
+            continue
+        cand_group = get_canonical_group(cand.context_type)
+        if cand_group != target_group and sim >= 0.60:
+            selected_map[cand.id] = (cand, sim, True)
+            cross_domain_added += 1
+
+    # 4. Purge stale semantic edges for this node before writing new edges
+    db.query(ContextEdge).filter(
+        ContextEdge.user_id == user_id,
+        ContextEdge.kind == "semantic",
+        (ContextEdge.source_id == target_node.id) | (ContextEdge.target_id == target_node.id),
+    ).delete(synchronize_session="fetch")
+    db.flush()
+
+    # 5. Enforce canonical edge storage: source_id < target_id and unique (user_id, source_id, target_id, kind)
+    new_edges: List[ContextEdge] = []
+    seen_keys = set()
+
+    for cand_id, (cand, sim, is_cross) in selected_map.items():
+        src_id, tgt_id = order_edge_endpoints(target_node.id, cand.id)
+        edge_key = (str(user_id), str(src_id), str(tgt_id), "semantic")
+        if edge_key in seen_keys:
+            continue
+        seen_keys.add(edge_key)
+
+        existing = (
+            db.query(ContextEdge)
+            .filter(
+                ContextEdge.user_id == user_id,
+                ContextEdge.source_id == src_id,
+                ContextEdge.target_id == tgt_id,
+                ContextEdge.kind == "semantic",
+            )
+            .first()
+        )
+        if existing:
+            existing.weight = round(float(sim), 3)
+            existing.cross_domain = is_cross
+            new_edges.append(existing)
+        else:
+            edge = ContextEdge(
+                user_id=user_id,
+                source_id=src_id,
+                target_id=tgt_id,
+                kind="semantic",
+                weight=round(float(sim), 3),
+                cross_domain=is_cross,
+            )
+            db.add(edge)
+            new_edges.append(edge)
+
+    db.commit()
+    for e in new_edges:
+        db.refresh(e)
+
+    invalidate_knowledge_graph_cache(user_id)
+    return new_edges
+
+
 def compute_knowledge_graph(
     db: Session,
     user_id: UUID,
-    threshold: float = 0.75,
-    top_k: int = 5,
+    min_similarity: float = 0.60,
+    threshold: Optional[float] = None,
+    top_k: int = 6,
     limit: int = 300,
+    types: Optional[str] = None,
+    subject: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Computes the server-side Knowledge Graph for semantic_contexts:
-    1. Fetches all context nodes for this user.
-    2. Computes pairwise cosine similarity between embeddings.
-    3. Retains top-K neighbors per node exceeding the similarity threshold.
-    4. Deduplicates bidirectional edges.
-    5. Precomputes node degree server-side.
-    6. Attaches canonical type information (group, glyph, style).
+    1. Fetches context nodes for this user, with optional filtering by types (comma-separated) and subject.
+    2. Drops 'minimum 5 nodes' check: if N >= 1, returns existing nodes with calculated edges; if N = 0, returns empty lists.
+    3. Calculates edges combining persisted context_edges and dynamic cosine similarity above min_similarity.
+    4. Computes node degree server-side.
+    5. Returns formatted response with nodes, edges, types_present registry, and truncated flag.
     """
-    # 1. Fetch user contexts
+    effective_similarity = threshold if threshold is not None else min_similarity
+
+    # 1. Fetch user contexts with optional types and subject filtering
+    query = db.query(SemanticContext).filter(SemanticContext.user_id == user_id)
+
+    if types:
+        type_list = [t.strip().lower() for t in types.split(",") if t.strip()]
+        if type_list:
+            query = query.filter(func.lower(SemanticContext.context_type).in_(type_list))
+
+    if subject:
+        query = query.filter(SemanticContext.subject.ilike(f"%{subject.strip()}%"))
+
+    total_matching = query.count()
+    truncated = total_matching > limit
+
     contexts: List[SemanticContext] = (
-        db.query(SemanticContext)
-        .filter(SemanticContext.user_id == user_id)
+        query
         .order_by(SemanticContext.created_at.desc())
         .limit(limit)
         .all()
@@ -686,18 +880,46 @@ def compute_knowledge_graph(
         return {
             "nodes": [],
             "edges": [],
+            "types_present": [],
+            "truncated": False,
             "total_nodes": 0,
             "total_edges": 0,
         }
 
-    # Cache check based on latest row update/count
+    # Cache check based on latest row update/count and query parameters
     latest_dt = max((c.created_at for c in contexts if c.created_at), default=datetime.datetime.min)
-    cache_key = f"{user_id}:{threshold}:{top_k}:{limit}:{len(contexts)}:{latest_dt}"
+    cache_key = f"{user_id}:{effective_similarity}:{top_k}:{limit}:{types}:{subject}:{len(contexts)}:{latest_dt}"
     cached = _GRAPH_CACHE.get(cache_key)
     if cached is not None:
         return cached
 
-    # Parse embeddings
+    context_ids = {c.id for c in contexts}
+
+    # edge_map: (min_id_str, max_id_str) -> {"weight": float, "kind": str, "cross_domain": bool}
+    edge_map: Dict[Tuple[str, str], Dict[str, Any]] = {}
+
+    # 2. Load persisted edges from context_edges (both structural and semantic)
+    persisted_edges = (
+        db.query(ContextEdge)
+        .filter(
+            ContextEdge.user_id == user_id,
+            ContextEdge.source_id.in_(context_ids),
+            ContextEdge.target_id.in_(context_ids),
+        )
+        .all()
+    )
+    for pedge in persisted_edges:
+        if pedge.weight >= effective_similarity:
+            s_id = str(pedge.source_id)
+            t_id = str(pedge.target_id)
+            edge_key = (min(s_id, t_id), max(s_id, t_id))
+            edge_map[edge_key] = {
+                "weight": pedge.weight,
+                "kind": pedge.kind,
+                "cross_domain": pedge.cross_domain,
+            }
+
+    # 3. Calculate dynamic similarity edges between nodes in contexts
     parsed_embeddings: List[Tuple[SemanticContext, List[float]]] = []
     for ctx in contexts:
         if ctx.embedding:
@@ -707,59 +929,52 @@ def compute_knowledge_graph(
             except Exception as e:
                 logger.warning(f"Failed to parse embedding for context {ctx.id}: {e}")
 
-    # Compute top-K neighbors per node
-    # Candidate edge set: (min_id, max_id) -> weight
-    edge_map: Dict[Tuple[str, str], float] = {}
-
     for i, (ctx_a, emb_a) in enumerate(parsed_embeddings):
-        # Score against all other nodes
-        neighbor_scores: List[Tuple[float, str]] = []
+        neighbor_scores: List[Tuple[float, SemanticContext]] = []
         for j, (ctx_b, emb_b) in enumerate(parsed_embeddings):
             if i == j:
                 continue
             sim = compute_node_similarity(ctx_a, emb_a, ctx_b, emb_b)
-            if sim >= threshold:
-                neighbor_scores.append((sim, str(ctx_b.id)))
+            if sim >= effective_similarity:
+                neighbor_scores.append((sim, ctx_b))
 
-        # Retain top-K nearest neighbors
         neighbor_scores.sort(key=lambda x: x[0], reverse=True)
         top_neighbors = neighbor_scores[:top_k]
 
         id_a = str(ctx_a.id)
-        for sim, id_b in top_neighbors:
+        group_a = get_canonical_group(ctx_a.context_type)
+
+        for sim, ctx_b in top_neighbors:
+            id_b = str(ctx_b.id)
             edge_key = (min(id_a, id_b), max(id_a, id_b))
-            if edge_key not in edge_map or sim > edge_map[edge_key]:
-                edge_map[edge_key] = round(sim, 3)
+            group_b = get_canonical_group(ctx_b.context_type)
+            is_cross = (group_a != group_b)
 
-    # Also load persisted structural edges from context_edges
-    persisted_edges = (
-        db.query(ContextEdge)
-        .filter(ContextEdge.user_id == user_id)
-        .all()
-    )
-    for pedge in persisted_edges:
-        s_id = str(pedge.source_id)
-        t_id = str(pedge.target_id)
-        edge_key = (min(s_id, t_id), max(s_id, t_id))
-        if edge_key not in edge_map:
-            edge_map[edge_key] = pedge.weight
+            if edge_key not in edge_map or sim > edge_map[edge_key]["weight"]:
+                edge_map[edge_key] = {
+                    "weight": round(sim, 3),
+                    "kind": "semantic",
+                    "cross_domain": is_cross,
+                }
 
-    # Calculate degrees
+    # 4. Calculate node degrees
     degree_map: Dict[str, int] = {str(ctx.id): 0 for ctx in contexts}
     edges_list: List[Dict[str, Any]] = []
 
-    for (src, tgt), weight in edge_map.items():
+    for (src, tgt), meta in edge_map.items():
         edges_list.append({
             "source": src,
             "target": tgt,
-            "weight": weight,
+            "weight": meta["weight"],
+            "kind": meta.get("kind", "semantic"),
+            "cross_domain": meta.get("cross_domain", False),
         })
         if src in degree_map:
             degree_map[src] += 1
         if tgt in degree_map:
             degree_map[tgt] += 1
 
-    # Format nodes with canonical metadata
+    # 5. Format nodes with canonical metadata and degree
     nodes_list: List[Dict[str, Any]] = []
     for ctx in contexts:
         cid = str(ctx.id)
@@ -780,15 +995,32 @@ def compute_knowledge_graph(
             "snippet": snippet,
             "raw_content": ctx.raw_content,
             "degree": degree_map.get(cid, 0),
-            "created_at": ctx.created_at.isoformat() if ctx.created_at else datetime.datetime.now(datetime.timezone.utc).isoformat(),
             "source_table": ctx.source_table,
             "source_id": str(ctx.source_id) if ctx.source_id else None,
+            "created_at": ctx.created_at.isoformat() if ctx.created_at else datetime.datetime.now(datetime.timezone.utc).isoformat(),
             "content_hash": ctx.content_hash,
+            "metadata": ctx.context_metadata or {},
+        })
+
+    # 6. Build types_present breakdown
+    type_counts = Counter(c.context_type for c in contexts)
+    types_present = []
+    for tname, count in sorted(type_counts.items(), key=lambda x: (-x[1], x[0])):
+        type_info = get_canonical_type_info(tname)
+        human_label = tname.replace("_", " ").title() if tname else "Unknown"
+        types_present.append({
+            "type": tname,
+            "group": type_info["group"],
+            "label": human_label,
+            "glyph": type_info["glyph"],
+            "count": count,
         })
 
     result = {
         "nodes": nodes_list,
         "edges": edges_list,
+        "types_present": types_present,
+        "truncated": truncated,
         "total_nodes": len(nodes_list),
         "total_edges": len(edges_list),
     }

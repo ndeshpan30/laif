@@ -22,6 +22,12 @@ from app.schemas.extraction import (
     TelemetryDataPoint,
     UniversalExtraction,
 )
+from app.schemas.onboarding import (
+    TopicAnswer,
+    ExtractedEntity,
+    OnboardingExtraction,
+)
+from app.schemas.audio import AudioTranscriptionResponse
 
 __all__ = [
     "UserProfileBase",
@@ -42,4 +48,9 @@ __all__ = [
     "GoalInterrogationSchema",
     "TelemetryDataPoint",
     "UniversalExtraction",
+    "TopicAnswer",
+    "ExtractedEntity",
+    "OnboardingExtraction",
+    "AudioTranscriptionResponse",
 ]
+

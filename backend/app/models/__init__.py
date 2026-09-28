@@ -3,6 +3,7 @@ from app.models.semantic import SemanticContext, ContextEdge
 from app.models.schedule import ScheduleItem
 from app.models.tracker import TrackerDefinition
 from app.models.telemetry import TelemetryLog
+from app.models.onboarding import OnboardingCoverage
 
 __all__ = [
     "UserProfile",
@@ -11,4 +12,6 @@ __all__ = [
     "ScheduleItem",
     "TrackerDefinition",
     "TelemetryLog",
+    "OnboardingCoverage",
 ]
+

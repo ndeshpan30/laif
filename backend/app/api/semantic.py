@@ -32,44 +32,57 @@ class SemanticContextResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+DEFAULT_USER_ID = UUID("00000000-0000-0000-0000-000000000001")
+
+
+@router.post("/api/ingest")
 @router.post("/api/upload-syllabus")
 @router.post("/api/semantic/upload-syllabus")
 async def upload_syllabus(
-    user_id: UUID = Form(...),
+    user_id: Optional[UUID] = Form(None),
     subject: Optional[str] = Form(None),
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
 ):
     """
-    Ingests an academic syllabus, timetable, or lab schedule PDF.
+    Ingests an academic syllabus, timetable, or lab schedule document (PDF or image).
     Extracts text using PyMuPDF, chunks into 350-word modules, generates 1536-dim embeddings,
     and stores them with context_type='syllabus_module'.
-    Handles corrupt, encrypted, or empty PDFs cleanly.
+    Handles corrupt, encrypted, or empty files cleanly.
     """
-    if not file.filename.lower().endswith(".pdf"):
-        raise HTTPException(status_code=400, detail="Only PDF files are supported")
+    allowed_exts = (".pdf", ".png", ".jpg", ".jpeg", ".webp")
+    filename_lower = (file.filename or "").lower()
+    if not any(filename_lower.endswith(ext) for ext in allowed_exts):
+        raise HTTPException(
+            status_code=400,
+            detail="Only PDF and image files (.pdf, .png, .jpg, .jpeg, .webp) are supported",
+        )
 
     content = await file.read()
     if not content:
         raise HTTPException(status_code=400, detail="Empty file uploaded")
 
+    target_user_id = user_id or DEFAULT_USER_ID
+
     try:
         records = ingest_syllabus_pdf(
             db=db,
-            user_id=user_id,
+            user_id=target_user_id,
             pdf_bytes=content,
             subject=subject,
+            filename=file.filename,
         )
     except ValueError as ve:
         raise HTTPException(status_code=400, detail=str(ve))
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Failed to process PDF: {e}")
+        raise HTTPException(status_code=400, detail=f"Failed to process document: {e}")
 
     return {
         "status": "success",
         "filename": file.filename,
         "modules_ingested": len(records),
         "subject": subject or (records[0].subject if records else "Academic Coursework"),
+        "reply": f"Ingested '{file.filename}' into your knowledge base ({len(records)} modules extracted). You can ask questions about the syllabus or timetable anytime, or type out any additional details.",
     }
 
 

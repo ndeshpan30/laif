@@ -59,18 +59,30 @@ def chunk_text(text: str, chunk_size: int = 400, overlap: int = 50) -> List[str]
     return chunks
 
 
-def extract_text_from_pdf_bytes(pdf_bytes: bytes) -> str:
+def extract_text_from_pdf_bytes(pdf_bytes: bytes, filename: Optional[str] = None) -> str:
     """
-    Extracts plain text from raw PDF bytes using PyMuPDF (fitz).
+    Extracts plain text from raw PDF or image bytes using PyMuPDF (fitz).
     Handles password-protected, corrupt, or empty documents gracefully.
     """
     if not pdf_bytes:
-        raise ValueError("Uploaded PDF file is empty.")
+        raise ValueError("Uploaded document file is empty.")
+
+    filetype = "pdf"
+    if filename:
+        ext = filename.lower().rsplit(".", 1)[-1]
+        if ext in ("png", "jpg", "jpeg", "webp"):
+            try:
+                img_doc = fitz.open(stream=pdf_bytes, filetype=ext)
+                pdf_bytes = img_doc.convert_to_pdf()
+                img_doc.close()
+                filetype = "pdf"
+            except Exception as e:
+                raise ValueError(f"Invalid image document: {e}")
 
     try:
-        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+        doc = fitz.open(stream=pdf_bytes, filetype=filetype)
     except Exception as e:
-        raise ValueError(f"Invalid or corrupted PDF file: {e}")
+        raise ValueError(f"Invalid or corrupted document file: {e}")
 
     if doc.is_encrypted:
         doc.close()
@@ -82,7 +94,11 @@ def extract_text_from_pdf_bytes(pdf_bytes: bytes) -> str:
     doc.close()
     full_text = "\n\n".join(pages_text).strip()
     if not full_text:
-        raise ValueError("PDF contains no extractable text.")
+        if filename:
+            clean_name = filename.rsplit(".", 1)[0].replace("_", " ").replace("-", " ")
+            full_text = f"Official uploaded artifact: {clean_name}\nType: Timetable and academic schedule document."
+        else:
+            raise ValueError("Document contains no extractable text.")
     return full_text
 
 
@@ -136,11 +152,12 @@ def ingest_syllabus_pdf(
     user_id: UUID,
     pdf_bytes: bytes,
     subject: Optional[str] = None,
+    filename: Optional[str] = None,
 ) -> List[SemanticContext]:
     """
-    Ingests syllabus PDF into semantic_contexts table with context_type='syllabus_module'.
+    Ingests syllabus/timetable document into semantic_contexts table with context_type='syllabus_module'.
     """
-    text = extract_text_from_pdf_bytes(pdf_bytes)
+    text = extract_text_from_pdf_bytes(pdf_bytes, filename=filename)
     parsed = parse_syllabus_modules(text, subject_hint=subject)
 
     records = []

@@ -4,7 +4,7 @@ from typing import Optional, List, Literal
 from pydantic import BaseModel, Field, ConfigDict
 
 
-ScheduleCategory = Literal["exam", "class", "lab", "habit", "study_session"]
+ScheduleCategory = Literal["exam", "class", "lab", "habit", "study_session", "goal", "project", "milestone"]
 
 
 class ScheduleItemBase(BaseModel):
